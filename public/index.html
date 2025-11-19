@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>多人猜歌遊戲</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 18px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+
+        input {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: none;
+            background: #334155;
+            color: #e2e8f0;
+            margin-right: 8px;
+        }
+
+        button {
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: #22c55e;
+            color: #064e3b;
+            font-weight: bold;
+        }
+
+        .options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .option-btn {
+            padding: 10px;
+            background: #334155;
+            color: #e2e8f0;
+            border-radius: 8px;
+            text-align: left;
+            border: none;
+            cursor: pointer;
+            transition: 0.1s;
+            font-size: 16px;
+        }
+
+            .option-btn.correct {
+                background: #16a34a;
+                color: #022c22;
+            }
+
+            .option-btn.wrong {
+                background: #b91c1c;
+            }
+    </style>
+</head>
+
+<body>
+    <h1>🎵 多人猜歌競速</h1>
+
+    <!-- 登入 -->
+    <div class="card" id="login-card">
+        <input id="roomIdInput" placeholder="房間代碼">
+        <input id="nameInput" placeholder="暱稱">
+        <button id="joinBtn">加入房間</button>
+    </div>
+
+    <!-- 房間 -->
+    <div class="card" id="room-card" style="display:none;">
+        <h3 id="roomLabel"></h3>
+        <h4 id="hostLabel"></h4>
+        <h4>玩家列表</h4>
+        <ul id="playersList"></ul>
+        <button id="startBtn">開始遊戲（10 題）</button>
+    </div>
+
+    <!-- 遊戲 -->
+    <div class="card" id="game-card" style="display:none;">
+        <h3 id="hint"></h3>
+        <audio id="audioPlayer" controls></audio>
+        <div class="options" id="optionsContainer"></div>
+        <div id="resultMsg"></div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        const login = document.getElementById('login-card');
+        const roomCard = document.getElementById('room-card');
+        const gameCard = document.getElementById('game-card');
+
+        const joinBtn = document.getElementById('joinBtn');
+        const startBtn = document.getElementById('startBtn');
+        const playersList = document.getElementById('playersList');
+        const roomLabel = document.getElementById('roomLabel');
+        const hostLabel = document.getElementById('hostLabel');
+
+        const audioPlayer = document.getElementById('audioPlayer');
+        const optionsContainer = document.getElementById('optionsContainer');
+        const hint = document.getElementById('hint');
+        const resultMsg = document.getElementById('resultMsg');
+
+        let mySocketId = null;
+        let isHost = false;
+        let hasAnswered = false;
+
+        socket.on('connect', () => { mySocketId = socket.id; });
+
+        // 加入房間
+        joinBtn.onclick = () => {
+            const roomId = document.getElementById('roomIdInput').value.trim();
+            const name = document.getElementById('nameInput').value.trim();
+
+            socket.emit('joinRoom', { roomId, name });
+        };
+
+        // 房間資訊
+        socket.on('roomState', ({ roomId, hostId, players }) => {
+            login.style.display = 'none';
+            roomCard.style.display = 'block';
+
+            roomLabel.textContent = `房間：${roomId}`;
+            hostLabel.textContent = hostId === mySocketId ? '你是房主' : '一般玩家';
+
+            isHost = hostId === mySocketId;
+            startBtn.style.display = isHost ? 'block' : 'none';
+
+            playersList.innerHTML = '';
+            Object.values(players).forEach(p => {
+                const li = document.createElement('li');
+                li.textContent = `${p.name} — ${p.score} 分`;
+                playersList.appendChild(li);
+            });
+        });
+
+        // 房主開始
+        startBtn.onclick = () => {
+            socket.emit('startGame');
+        };
+
+        // 遊戲開始通知
+        socket.on('gameStart', ({ total }) => {
+            gameCard.style.display = 'block';
+            resultMsg.textContent = '';
+        });
+
+        // 題目
+        socket.on('question', ({ audioUrl, options, index, total }) => {
+            resultMsg.textContent = '';
+            hasAnswered = false;
+
+            hint.textContent = `第 ${index} / ${total} 題`;
+
+            audioPlayer.src = audioUrl;
+            audioPlayer.currentTime = 0;
+            audioPlayer.play().catch(() => { });
+
+            optionsContainer.innerHTML = '';
+            options.forEach((text, i) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn';
+                btn.textContent = text;
+
+                btn.onclick = () => {
+                    if (hasAnswered) return;
+                    hasAnswered = true;
+                    socket.emit('answer', { optionIndex: i });
+                };
+
+                optionsContainer.appendChild(btn);
+            });
+        });
+
+        // 個人回答結果
+        socket.on('answerResult', ({ isCorrect }) => {
+            resultMsg.textContent = isCorrect ? '你答對了！' : '答錯了！';
+        });
+
+        // 本題結果
+        socket.on('roundResult', ({ correctIndex, winner }) => {
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+
+            const buttons = document.getElementsByClassName('option-btn');
+            for (let i = 0; i < buttons.length; i++) {
+                if (i === correctIndex) {
+                    buttons[i].classList.add('correct');
+                }
+            }
+
+            resultMsg.textContent = `最快答對：${winner.name}（${winner.score} 分）`;
+        });
+
+        // 遊戲結束
+        socket.on('gameEnd', ({ players }) => {
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+
+            let ranking = Object.values(players)
+                .sort((a, b) => b.score - a.score);
+
+            let html = '<h2>🎉 最終排行榜</h2><ol>';
+
+            ranking.forEach(p => {
+                html += `<li>${p.name} — ${p.score} 分</li>`;
+            });
+
+            html += '</ol>';
+
+            optionsContainer.innerHTML = html;
+            hint.textContent = '遊戲結束';
+        });
+    </script>
+</body>
+
+</html>
